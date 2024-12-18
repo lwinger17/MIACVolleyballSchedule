@@ -1,0 +1,917 @@
+---
+title: "MIAC Volleyball"
+author: "Lucas Winger and Abigail Halvorson"
+date: "11/25/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_knit$set(root.dir = "C:/Users/Lucas/Desktop/MIACVolleyball")
+```
+
+# Set up
+
+```{r}
+# ---------------------------------------------------------------------------------------------------------------
+# DIRECTORIES AND LIBRARIES
+# ---------------------------------------------------------------------------------------------------------------
+
+coinorDirectory = "C:/Users/Lucas/Desktop/Cbc-master-win64-msvc15-mtd/bin"
+mainDirectory = "C:/Users/Lucas/Desktop/MIACVolleyball"
+
+
+
+library(readxl)
+library(lubridate)
+library(lpSolve)
+library(lpSolveAPI)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# GETTING DATA, ETC.
+# ---------------------------------------------------------------------------------------------------------------
+coinorDirectory = "C:/Users/Lucas/Desktop/Cbc-master-win64-msvc15-mtd/bin"
+maxNodes = 50000
+
+
+
+cleanUpModel = function()
+{
+  whereIsZero <- which(abs(constraintMatrix) %*% matrix(1,ncol(constraintMatrix),1) == 0)
+  if(length(whereIsZero) > 0)
+  {
+    constraintMatrix <<- constraintMatrix[-whereIsZero, ]
+    inequalities <<- inequalities[-whereIsZero, ,drop=FALSE]
+    rightHandSide <<- rightHandSide[-whereIsZero, ,drop=FALSE]
+  }
+}
+
+# pads the model with all-zeros (or "") in preparation for adding vectors
+# this significantly speeds up the construction of the model by pre-allocating space
+# as opposed to massive copy/paste operations that R uses when you bind rows to a 
+# matrix one at a time.
+padModel = function(numberOfRowsToAdd)
+{
+  oldNumberOfConstraints <- nrow(constraintMatrix)
+  constraintMatrix <<- rbind(constraintMatrix,matrix(0,numberOfRowsToAdd,ncol(constraintMatrix)))
+  inequalities <<- rbind(inequalities,matrix("",numberOfRowsToAdd,1))
+  rightHandSide <<- rbind(rightHandSide,matrix(0,numberOfRowsToAdd,1))
+  nrc <- oldNumberOfConstraints + 1
+  return(nrc)
+}
+
+# generates a new constraint, ineq, rhs, and returns it
+# takes in an arbitrary length list of regular expressions and values, one of "=", "<=", and ">=", and a value for rhs
+generateConstraint = function(regexList,valueList,ineq,rhs)
+{
+  newConstraint <- matrix(0,1,length(namesOfVariables))
+  colnames(newConstraint) <- namesOfVariables
+  for(ii in 1:length(regexList))
+  {
+    regex <- regexList[ii]
+    indicesToModify <- grep(pattern = regex,namesOfVariables)
+    newConstraint[indicesToModify] <- valueList[ii]
+  }
+  constraintMatrix[newRowCounter,] <<- newConstraint
+  inequalities[newRowCounter,1] <<- ineq
+  rightHandSide[newRowCounter,1] <<- rhs
+  newRowCounter <<- newRowCounter + 1
+
+}
+
+#this takes in the output of formatInput
+getOppenents = function(m,team)
+{
+  allteams = colnames(m)
+  teamRow = allteams[which(m[team,] == "1")]
+  print(teamRow)
+  return(teamRow)
+}
+
+
+```
+
+# The basics of MIAC
+
+
+
+```{r}
+
+#----------------------------------------------------------------------------------------------------------------
+# SETTING SCHEDULE PARAMETERS
+#----------------------------------------------------------------------------------------------------------------
+MinHomeGames = 4
+MinAwayGames = 4
+homeMax = 6
+awayMax = 6
+lastDaysHomeGames = 3
+minHomeOnWeekends = 2
+
+
+
+
+longTeamsOnWeekends <- TRUE
+#added
+# prep file names for outputs
+  volley2025CSV = paste("v2025",
+                  homeMax,
+                  awayMax,
+                  lastDaysHomeGames,
+                  minHomeOnWeekends,
+                  ".csv",
+                  sep = "_")
+  
+  volley2026CSV= paste("v2026",
+                  homeMax,
+                  awayMax,
+                  lastDaysHomeGames,
+                  minHomeOnWeekends,
+                  ".csv",
+                  sep = "_")
+  
+    volley2027CSV = paste("v2027",
+                  homeMax,
+                  awayMax,
+                  lastDaysHomeGames,
+                  minHomeOnWeekends,
+                  ".csv",
+                  sep = "_")
+    
+      volley2028CSV = paste("v2028",
+                  homeMax,
+                  awayMax,
+                  lastDaysHomeGames,
+                  minHomeOnWeekends,
+                  ".csv",
+                  sep = "_")
+```
+
+
+
+```{r}
+
+#-------------------------------------------------------------------------------------------------------
+#CREATING LISTS
+#-------------------------------------------------------------------------------------------------------
+
+#added
+#Create list of the teams
+teams = as.matrix(read_excel("data/teams.xlsx"))
+
+#added
+#List of PlayDates
+playDates25 = as.matrix(read_excel("data/2025Dates.xlsx"))
+numericDates25 = as.numeric(ymd(playDates25))
+
+playDates26 = as.matrix(read_excel("data/2026Dates.xlsx"))
+numericDates26 = as.numeric(ymd(playDates26))
+
+playDates27 = as.matrix(read_excel("data/2027Dates.xlsx"))
+numericDates27 = as.numeric(ymd(playDates27))
+
+playDates28 = as.matrix(read_excel("data/2028Dates.xlsx"))
+numericDates28 = as.numeric(ymd(playDates28))
+
+allDates <- c(numericDates25, numericDates26, numericDates27, numericDates28)
+
+
+playDates <- as.Date(allDates, origin = "1970-01-01")
+
+
+playDates <- sort(playDates)
+
+
+playDates25 <- as.Date(numericDates25, origin = "1970-01-01")
+
+
+playDates25 <- sort(playDates25)
+#list of teams
+
+teamNames <- read_excel("data/teams.xlsx")$Teams
+
+
+#Distance--------------------------------------------------
+distance <- read_excel("data/distanceInMiles.xlsx")
+colnames(distance)[1] <- "School"
+
+#------------------------------------------------------------
+
+formatInput = function(m)
+{
+  m <- as.data.frame(t(m))
+  names(m) <- lapply(m[1, ], as.character)
+  m <- m[-1,]
+  m = as.matrix(m)
+  return(m)
+}
+
+
+```
+
+# Model Creation
+
+
+
+```{r}
+
+
+#-----------------------------------------------------------------------------------------------------------------
+# CREATING VARIABLES
+#-----------------------------------------------------------------------------------------------------------------
+# Clear any previous values
+namesOfVariables <- c()    # Combined list of variables (no separate distance list)
+si <- vector()  
+sj <- vector()  
+L <- vector()   
+D <- vector()   
+
+D1 <- wday(playDates25) == 6  # Fridays
+D2 <- wday(playDates25) == 7  # Saturdays
+
+
+# Ensure playDates is properly formatted as Date objects
+if (!inherits(playDates25, "Date")) {
+  playDates25 <- as.Date(playDates25) 
+}
+
+namesOfVariables <- c()
+
+for (i in 1:(length(teamNames))) {  # Loop over all teams except the last one
+  for (j in 1:(length(teamNames))) {  # Loop over all teams after team i (to avoid duplicates)
+    if (i != j) {
+
+    distValue <- as.numeric(distance[which(distance$School == teamNames[i]), 
+                                      which(colnames(distance) == teamNames[j])])
+    
+    # Add home and away teams
+    si <-  teamNames[i]  # Home team
+    sj <-  teamNames[j]  # Away team
+    
+    L <- c(L, distValue)  # Add distance to the list
+   playDates25 <- playDates25[order(format(playDates25, "%Y-%m-%d"))]
+    
+    for (date in playDates25) {
+      dateStr <- format(as.Date(date, origin = "1970-01-01"), "%Y-%m-%d") 
+      newVariable <- paste("x", si, sj, dateStr, sep = ".")
+      namesOfVariables <- c(namesOfVariables, newVariable)
+    }
+  }
+}
+}
+# Print a sample of the variable names for verification
+print(head(namesOfVariables))
+
+
+```
+
+
+
+```{r}
+#---------------------------------------------------------------------------------------------------------------------
+#CONSTRAINTS
+#---------------------------------------------------------------------------------------------------------------------
+#Creating constraint matrix
+constraintMatrix = matrix(0,0,length(namesOfVariables))
+colnames(constraintMatrix) = namesOfVariables
+inequalities = matrix("",0,1)
+rightHandSide = matrix(0,0,1)
+
+
+
+```
+
+
+```{r}
+#------------------------------------------------------------------------
+
+# each team plays once a week  WORKS
+
+print(dim(constraintMatrix))
+
+newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 12)
+# AXVIG need to change this to just si's, not sj's. 
+for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+for (i in 1:(length(teamNames))) { 
+      si <- teamNames[i]
+        regexList <- c(
+          paste("^x", si, ".*", dateStr, sep = "\\."),
+          paste("^x", ".*", si, dateStr, sep = "\\.")
+        )
+        valueList <- c(1,1)
+        newIneq <- "="
+        newRhs <- 1
+        generateConstraint(regexList, valueList, newIneq, newRhs)
+      }
+    }
+
+
+
+cleanUpModel()
+
+
+
+```
+
+```{r}
+
+
+# This is commented out because system can run without it
+# and because it fixes an issue where a team plays multiple times in a day
+
+# #-------------------------------------------------------------
+# # each team plays 11 games in a season #WORKS
+ newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 6)
+# # AXVIG need to change this to just si's, not sj's.  also get rid of "j" loop.
+
+for (i in 1:(length(teamNames))) {
+
+      si <- teamNames[i]
+        regexList <- c(
+          paste("^x", si, ".*", ".*", sep = "\\."),
+           paste("^x", ".*", si, ".*", sep = "\\.")
+        )
+        valueList <- c(1,1)
+        newIneq <- ">="
+        newRhs <- 11
+        generateConstraint(regexList, valueList, newIneq, newRhs)
+      }
+
+
+
+
+
+cleanUpModel()
+
+```
+
+
+```{r}
+
+# min number of games
+
+# AXVIG need to change this to just si's, not sj's.
+newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 6)
+
+
+  for (i in 1:(length(teamNames))) {
+        si <- teamNames[i]
+  
+        regexList = c(paste("^x", si, ".*", ".*", sep = "\\."))
+        valueList = rep(1,length(regexList))
+        newIneq = ">="
+        newRhs = MinHomeGames
+        generateConstraint(regexList, valueList, newIneq, newRhs)
+  }
+
+
+
+
+
+for (i in 1:(length(teamNames))) {
+      si <- teamNames[i]
+
+     regexList = c(paste("^x",".*", si, ".*", sep = "\\."))
+    valueList = rep(1,length(regexList))
+    newIneq = ">="
+    newRhs = MinAwayGames
+    generateConstraint(regexList, valueList, newIneq, newRhs)
+  }
+
+
+cleanUpModel()
+
+
+```
+
+
+
+```{r}
+# NO MORE THAN SO MANY HOME OR AWAY GAMES IN A ROW
+
+newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 12)
+
+for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+for (i in 1:(length(teamNames))) {
+      si <- teamNames[i]
+      
+    regexList = c()
+    for(ii in 0:homeMax){
+      regexList = c(
+                    regexList,
+                    paste("^x",si, ".*",  playDates25[match(dateStr, playDates25) + ii], sep = "\\.")
+                    )
+    }
+    valueList = rep(1,length(regexList))
+    newIneq = "<="
+    newRhs = homeMax
+    generateConstraint(regexList,valueList,newIneq,newRhs)
+  }
+}
+
+
+for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+for (i in 1:(length(teamNames))) {
+      si <- teamNames[i]
+    regexList = c()
+    for(ii in 0:awayMax){
+      regexList = c(
+        regexList,
+        paste("^x",".*", si, playDates25[match(dateStr, playDates25) + ii], sep = "\\."))
+    }
+    valueList = rep(1,length(regexList))
+    newIneq = "<="
+    newRhs = awayMax
+    generateConstraint(regexList,valueList,newIneq,newRhs)
+  }
+}
+
+
+cleanUpModel()
+```
+
+```{r}
+
+#Teams play each other at most once WHY DONT YOU WORK
+
+newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 12)
+
+
+for (i in 1:(length(teamNames)-1)) {
+  for (j in (i+1):length(teamNames)){
+    si <- teamNames[i]
+    sj <- teamNames[j]
+
+        regexList <- c(
+            paste("^x", si, sj, ".*", sep = "\\."),
+            paste("^x", sj, si, ".*", sep = "\\.")
+        )
+        
+        valueList = rep(1, length(regexList))
+        newIneq = "<="
+        newRhs = 1
+        generateConstraint(regexList, valueList, newIneq, newRhs)
+  }
+}
+
+
+cleanUpModel()
+
+```
+ 
+```{r}
+ # games over 180 miles play on weekend  
+ farGameIndices <- which(L > 180)
+ #AXVIG this constraints seems like it's redundant to me.  It just says that if two teams are far apart, then they *may* play at most once on Saturdays.  It should tell them that they *can't* play on weekdays.
+ newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(farGameIndices) * length(playDates25) * 30)
+ 
+ 
+ for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+        
+ # Loop through the indices of games over 180 miles
+ for (i in farGameIndices) {
+   disValue <- as.numeric(distance[which(distance$School == teamNames [i]), which(colnames(distance) == teamNames [j])])
+   for (i in 1:(length(teamNames))) {  
+  for (j in (i+1):length(teamNames))  {
+       si <- teamNames[i]
+       sj <- teamNames[j]
+       
+         
+         # Check if the current date is a Saturday (weekend game constraint)
+         if (wday(as.Date(date)) == 7) {  
+           regexList <- c(paste("^x", si, sj, dateStr, sep = "\\."))
+           #print(paste("Variable name:", regexList))
+
+             valueList <- c(1)
+              newIneq <- "<="  
+             newRhs <- 1  
+             # Generate the constraint
+             generateConstraint(regexList, valueList, newIneq, newRhs)
+         }
+       }
+     }
+   }
+ }
+ 
+ 
+ 
+ # Clean up the model after adding the constraints
+ cleanUpModel()
+
+
+```
+
+```{r}
+
+
+# at least one home game in the last 3 games of each year
+
+# Ensure playDates25 is in Date format
+playDates25 <- as.Date(playDates25)
+
+# Get the last three dates in the schedule
+lastThreeDates <- tail(playDates25, 3)
+lastThreeDateStrings <- format(lastThreeDates, "%Y-%m-%d")
+
+# Prepare to add constraints
+newRowCounter = padModel(numberOfRowsToAdd = length(teamNames) * length(playDates25) * 10)
+ 
+ for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+        
+for (i in 1:(length(teamNames))) {
+  si <- teamNames[i]  
+
+regexList <- sapply(lastThreeDateStrings, function(date) {
+  paste0("^x", si,  ".*", dateStr, sep = "\\.")
+})
+dateRegex = paste(lastDaysHomeGames,"|")
+dateRegex = paste0("(",dateRegex,")") 
+regexList = paste0("^x", si,  ".*", dateRegex, sep = "\\.")
+valueList <- c(1)
+
+  # Set the inequality and RHS for the constraint
+  newIneq <- ">="
+  newRhs <- 1  # At least one home game
+  
+  # Generate the constraint and add it to the matrix
+  generateConstraint(regexList, valueList, newIneq, newRhs)
+}
+}
+
+cleanUpModel()
+
+
+
+```
+
+
+
+```{r}
+#=================================================================================================================
+#LINEAR PROGRAM
+#=================================================================================================================
+
+# Create LP object
+LP <- make.lp(NROW(constraintMatrix), NCOL(constraintMatrix))
+set.type(LP, grep("(^x\\.|^b\\.)", namesOfVariables), type = c("binary"))
+
+# Initialize objective function
+objectiveFunction <- rep(0, length(namesOfVariables))
+
+
+for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+        
+for (i in 1:(length(teamNames))) {
+    si <- teamNames[i]
+
+    
+     regexForImbalance = c(paste("^x\\.",si,"\\.",".*","\\.",dateStr), 
+                            paste("^x\\.",".*","\\.",si,"\\.",dateStr))
+     
+    indicesToModify <- unlist(lapply(regexForImbalance, function(pattern) grep(pattern, namesOfVariables)))
+    objectiveFunction[indicesToModify] = 1000 
+}
+}
+
+
+
+
+# Debugging: Print dimensions of the constraint matrix and other details
+print(dim(constraintMatrix))  
+print(length(inequalities))  
+print(length(rightHandSide))  
+na_rows <- which(apply(constraintMatrix, 1, function(x) any(is.na(x))))
+print(na_rows)
+
+
+```
+
+Now we set up, solve, process, and save the schedules to files!
+
+```{r}
+
+set.objfn(LP,objectiveFunction)
+
+#Minimization Problem
+lp.control(LP,sense='min')
+
+
+
+#Parcer Error
+
+#Set each row of LP individually
+for(rowCounter in 1:NROW(constraintMatrix)){
+  set.row(LP,rowCounter,constraintMatrix[rowCounter,])
+  set.constr.type(LP,inequalities[rowCounter,1],rowCounter)
+  set.rhs(LP, rightHandSide[rowCounter,1], rowCounter)
+}
+
+
+#writes martrix into mps file
+setwd(coinorDirectory)
+write.lp(LP,'blarg.mps',type='mps')
+
+
+system(paste0("cbc.exe blarg.mps maxN ",maxNodes," solve solution blarg.txt exit"))
+
+#____________________
+#Process the solution
+#coinOrCbcSolutionParser = function('blarg.txt',namesOfVariables){
+  dataFromCoinOrCBC = data.frame(read.table(text=readLines("blarg.txt")[count.fields("blarg.txt") == 4]))
+   partialSolutionLocations = dataFromCoinOrCBC$V2
+   partialSolutionValues = dataFromCoinOrCBC$V3
+   partialSolutionLocations= gsub("C","",partialSolutionLocations)
+   partialSolutionLocations = as.numeric(partialSolutionLocations)
+   fullSolutionVector = rep(0,length(namesOfVariables))
+  for(ii in 1:length(partialSolutionLocations)){
+     fullSolutionVector[partialSolutionLocations[ii]] = partialSolutionValues[ii]
+ }
+ names(fullSolutionVector) = namesOfVariables
+# return(fullSolutionVector)
+# }
+ fullSolutionVector = as.matrix(fullSolutionVector)
+ fullSolutionVector = t(fullSolutionVector)
+ solutionVector = colnames(fullSolutionVector) [which(fullSolutionVector[1,] == 1)]
+ 
+ #Solution
+ solutionVector
+
+# Schedule matrix with proper date formatting
+schedule <- matrix("", nrow = length(teamNames), ncol = length(playDates25))
+row.names(schedule) <- teamNames
+colnames(schedule) <- as.character(playDates25)
+
+# Ensure playDates25 is a Date vector
+playDates25 <- as.Date(playDates25, origin = "1970-01-01")
+
+# Check if 'playDates25' is actually a Date object
+if (!all(sapply(playDates25, inherits, "Date"))) {
+  stop("Some elements in playDates25 are not valid Date objects.")
+}
+
+      for (date in playDates25) {
+        dateStr <- format(as.Date(date), "%Y-%m-%d")
+        
+for (i in 1:(length(teamNames) - 1)) {  
+  for (j in (i + 1):length(teamNames)) {
+    si <- teamNames[i]
+    sj <- teamNames[j]
+
+      if (!inherits(date, "Date")) {
+        next  # Skip if the date is invalid
+      }
+      # Construct the variable name for this game
+      newVariable <- paste("x", si, sj, dateStr, sep = ".")
+      
+      # Assuming solutionVector exists, check if the newVariable is in it
+      for (variable in solutionVector) {
+        if (variable == newVariable) {
+          # Assuming 'schedule' is a predefined matrix or data frame
+          schedule[sj, as.character(date)] <- paste0("@ ", si)  # Assign home team schedule
+        }
+      }
+
+      # Re-check for the second part of the schedule
+      newVariable <- paste("x", si, sj, dateStr, sep = ".")
+      for (variable in solutionVector) {
+        if (variable == newVariable) {
+          # Assuming 'schedule' is a predefined matrix or data frame
+          schedule[sj, as.character(date)] <- paste0("v ", si)  # Assign away team schedule
+        }
+      }
+    }
+  }
+}
+
+
+# View the complete schedule
+View(schedule)
+setwd(paste0(mainDirectory,"/results"))
+# Write the complete schedule matrix to the results folder
+write.csv(x = schedule,file = volley2025CSV)
+
+
+
+
+```
+
+```{r}
+
+# Create 2026 schedule by mirroring 2025 
+
+#SOMETHING WRONG WITH PARCER
+
+schedule2026 <- matrix("", nrow = length(teamNames), ncol = length(playDates25))
+row.names(schedule2026) <- teamNames
+colnames(schedule2026) <- as.character(playDates26)
+
+
+playDates26 <- as.Date(playDates26, origin = "1970-01-01")
+
+
+if (!all(sapply(playDates26, inherits, "Date"))) {
+  stop("Some elements in playDates26 are not valid Date objects.")
+}
+
+
+for (i in 1:(length(teamNames))) {  
+  for (j in 1:(length(teamNames))) {
+    si <- teamNames[i]
+    sj <- teamNames[j]
+    
+    for (dateIndex in seq_along(playDates25)) {
+      date2025 <- playDates25[dateIndex]
+      date2026 <- playDates26[dateIndex]  # Match the index for 2026 dates
+      
+
+      if (!inherits(date2025, "Date") || !inherits(date2026, "Date")) {
+        next  # Skip if either date is invalid
+      }
+      
+      # Format the date as a string for use in variable names
+      dateStr2025 <- format(date2025, "%Y-%m-%d")
+      dateStr2026 <- format(date2026, "%Y-%m-%d")
+      
+
+      variable2025 <- paste("x", si, sj, dateStr2025, sep = ".")
+
+      if (variable2025 %in% solutionVector) {
+        # For 2026, switch home and away teams
+        schedule2026[si, as.character(date2026)] <- paste0("@ ", sj) 
+        schedule2026[sj, as.character(date2026)] <- paste0("v ", si) 
+      }
+    }
+  }
+}
+
+# View the complete 2026 schedule
+View(schedule2026)
+setwd(paste0(mainDirectory,"/results"))
+write.csv(x = schedule2026, file = volley2026CSV)
+
+
+```
+
+```{r}
+# Create 2025 schedule by switching home and away from 2026 schedule and changing dates to 2025
+schedule2025 <- matrix("", nrow = length(teamNames), ncol = length(playDates25))
+row.names(schedule2025) <- teamNames
+colnames(schedule2025) <- as.character(playDates25)
+
+# Ensure playDates25 are Date objects
+playDates25 <- as.Date(playDates25, origin = "1970-01-01")
+
+# Loop through each date in the 2026 schedule
+for (dateIndex in seq_along(playDates26)) {
+  date2026 <- playDates26[dateIndex]
+  date2025 <- playDates25[dateIndex]  # Use the 2025 dates
+
+  if (!inherits(date2026, "Date") || !inherits(date2025, "Date")) {
+    next  # Skip if either date is invalid
+  }
+
+  # Loop through each team in the 2026 schedule for this date
+  for (team in teamNames) {
+    matchup2026 <- schedule2026[team, as.character(date2026)]  # Get the matchup for the date in 2026
+
+    if (nchar(matchup2026) > 0) {  # If there is a matchup for the team
+      # Reverse home and away teams and update the date to 2025
+      if (substr(matchup2026, 1, 1) == "v") {
+        # If the team was playing at home in 2026, they are now playing away in 2025
+        schedule2025[team, as.character(date2025)] <- paste0("@ ", substr(matchup2026, 3, nchar(matchup2026)))
+        schedule2025[substr(matchup2026, 3, nchar(matchup2026)), as.character(date2025)] <- paste0("v ", team)
+      } else if (substr(matchup2026, 1, 1) == "@") {
+        # If the team was playing away in 2026, they are now playing at home in 2025
+        schedule2025[team, as.character(date2025)] <- paste0("v ", substr(matchup2026, 3, nchar(matchup2026)))
+        schedule2025[substr(matchup2026, 3, nchar(matchup2026)), as.character(date2025)] <- paste0("@ ", team)
+      }
+    }
+  }
+}
+
+# View the complete 2025 schedule
+View(schedule2025)
+
+# Write the new 2025 schedule to a CSV file
+setwd(paste0(mainDirectory, "/results"))
+write.csv(x = schedule2025, file = volley2025CSV)
+
+```
+
+```{r}
+# Create 2027 schedule by randomizing the matchups 
+
+schedule2027 <- matrix("", nrow = length(teamNames), ncol = length(playDates27))
+row.names(schedule2027) <- teamNames
+colnames(schedule2027) <- as.character(playDates27)
+
+playDates27 <- as.Date(playDates27, origin = "1970-01-01")
+
+# Ensure all dates in playDates27 are Date objects
+if (!all(sapply(playDates27, inherits, "Date"))) {
+  stop("Some elements in playDates27 are not valid Date objects.")
+}
+
+# Create a function to randomly shuffle matchups for a given date
+randomize_matchups <- function(teams) {
+  n <- length(teams)
+  matchups <- list()
+  
+  # Randomize pairings
+  shuffled_teams <- sample(teams, size = n, replace = FALSE)
+  
+  # Form pairs of teams
+  for (i in seq(1, n, by = 2)) {
+    matchups[[length(matchups) + 1]] <- c(shuffled_teams[i], shuffled_teams[i + 1])
+  }
+  
+  return(matchups)
+}
+
+# Loop through each date in the 2025 schedule and randomize the teams for 2027
+for (dateIndex in seq_along(playDates25)) {
+  date2025 <- playDates25[dateIndex]
+  date2027 <- playDates27[dateIndex]  # Match the index for 2027 dates
+
+  if (!inherits(date2025, "Date") || !inherits(date2027, "Date")) {
+    next  # Skip if either date is invalid
+  }
+
+  # Format the date as a string for use in variable names
+  dateStr2025 <- format(date2025, "%Y-%m-%d")
+  dateStr2027 <- format(date2027, "%Y-%m-%d")
+
+  # Randomize matchups for 2027 based on the teams available on this date
+  matchups_2027 <- randomize_matchups(teamNames)
+  
+  # Loop through the random matchups and assign them to the schedule
+  for (matchup in matchups_2027) {
+    home_team <- matchup[1]
+    away_team <- matchup[2]
+    
+    # Assign the home and away teams for 2027
+    schedule2027[home_team, as.character(date2027)] <- paste0("v ", away_team)  # Home team
+    schedule2027[away_team, as.character(date2027)] <- paste0("@ ", home_team)  # Away team
+  }
+}
+
+# View the complete 2027 schedule
+View(schedule2027)
+
+# Write the new 2027 schedule to a CSV file
+setwd(paste0(mainDirectory, "/results"))
+write.csv(x = schedule2027, file = volley2027CSV)
+
+
+```
+
+```{r}
+# Create 2028 schedule by switching home and away from 2027 schedule and changing dates to 2028
+schedule2028 <- matrix("", nrow = length(teamNames), ncol = length(playDates28))
+row.names(schedule2028) <- teamNames
+colnames(schedule2028) <- as.character(playDates28)
+
+# Ensure playDates28 are Date objects
+playDates28 <- as.Date(playDates28, origin = "1970-01-01")
+
+# Loop through each date in the 2027 schedule
+for (dateIndex in seq_along(playDates27)) {
+  date2027 <- playDates27[dateIndex]
+  date2028 <- playDates28[dateIndex]  # Use the 2028 dates
+
+  if (!inherits(date2027, "Date") || !inherits(date2028, "Date")) {
+    next  # Skip if either date is invalid
+  }
+
+  # Loop through each team in the 2027 schedule for this date
+  for (team in teamNames) {
+    matchup2027 <- schedule2027[team, as.character(date2027)]  # Get the matchup for the date in 2027
+
+    if (nchar(matchup2027) > 0) {  # If there is a matchup for the team
+      # Reverse home and away teams and update the date to 2028
+      if (substr(matchup2027, 1, 1) == "v") {
+        # If the team was playing at home in 2027, they are now playing away in 2028
+        schedule2028[team, as.character(date2028)] <- paste0("@ ", substr(matchup2027, 3, nchar(matchup2027)))
+        schedule2028[substr(matchup2027, 3, nchar(matchup2027)), as.character(date2028)] <- paste0("v ", team)
+      } else if (substr(matchup2027, 1, 1) == "@") {
+        # If the team was playing away in 2027, they are now playing at home in 2028
+        schedule2028[team, as.character(date2028)] <- paste0("v ", substr(matchup2027, 3, nchar(matchup2027)))
+        schedule2028[substr(matchup2027, 3, nchar(matchup2027)), as.character(date2028)] <- paste0("@ ", team)
+      }
+    }
+  }
+}
+
+# View the complete 2028 schedule
+View(schedule2028)
+
+# Write the new 2028 schedule to a CSV file
+setwd(paste0(mainDirectory, "/results"))
+write.csv(x = schedule2028, file = volley2028CSV)
+
+```
