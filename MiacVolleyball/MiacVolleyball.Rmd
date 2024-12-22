@@ -16,8 +16,8 @@ output: html_document
 # DIRECTORIES AND LIBRARIES
 # ---------------------------------------------------------------------------------------------------------------
 
-coinorDirectory = "C:/Users/Lucas/Desktop/Cbc-master-win64-msvc15-mtd/bin"
-mainDirectory = "C:/Users/Lucas/Desktop/MIACVolleyball"
+setwd("C:/Users/abiga/Downloads/MiacVolleyball")
+mainDirectory = "C:/Users/abiga/Downloads/MiacVolleyball"
 
 
 
@@ -30,7 +30,8 @@ library(lpSolveAPI)
 # ---------------------------------------------------------------------------------------------------------------
 # GETTING DATA, ETC.
 # ---------------------------------------------------------------------------------------------------------------
-coinorDirectory = "C:/Users/Lucas/Desktop/Cbc-master-win64-msvc15-mtd/bin"
+
+coinorDirectory = "C:/Users/abiga/Downloads/Cbc-2.7.5-win64-intel11.1/bin"
 maxNodes = 50000
 
 
@@ -100,8 +101,8 @@ getOppenents = function(m,team)
 #----------------------------------------------------------------------------------------------------------------
 # SETTING SCHEDULE PARAMETERS
 #----------------------------------------------------------------------------------------------------------------
-MinHomeGames = 4
-MinAwayGames = 4
+MinHomeGames = 5
+MinAwayGames = 5
 homeMax = 6
 awayMax = 6
 lastDaysHomeGames = 3
@@ -503,6 +504,61 @@ cleanUpModel()
 
 
 ```
+
+```{r}
+
+# Ensure playDates25 is in Date format
+playDates25 <- as.Date(playDates25)
+
+# Iterate over teams and play dates
+for (team in teamNames) {
+  # Constraint for at least 5 home games across all dates
+  newRowCounter <- padModel(1)  # Allocate space for the constraint
+  regexList <- sapply(playDates25, function(date) {
+    dateStr <- format(as.Date(date), "%Y-%m-%d")
+    paste0("^x\\.", team, "\\..*", dateStr)
+  })
+  generateConstraint(
+    regexList = regexList, 
+    valueList = rep(1, length(playDates25)), 
+    ineq = ">=", 
+    rhs = MinHomeGames
+  )
+  
+  # Constraint for no more than 6 home games across all dates
+  newRowCounter <- padModel(1)
+  generateConstraint(
+    regexList = regexList, 
+    valueList = rep(1, length(playDates25)), 
+    ineq = "<=", 
+    rhs = homeMax
+  )
+  
+  # Constraint for at least 5 away games across all dates
+  newRowCounter <- padModel(1)
+  regexList <- sapply(playDates25, function(date) {
+    dateStr <- format(as.Date(date), "%Y-%m-%d")
+    paste0("^x\\..*\\.", team, "\\..*", dateStr)
+  })
+  generateConstraint(
+    regexList = regexList, 
+    valueList = rep(1, length(playDates25)), 
+    ineq = ">=", 
+    rhs = MinAwayGames
+  )
+  
+  # Constraint for no more than 6 away games across all dates
+  newRowCounter <- padModel(1)
+  generateConstraint(
+    regexList = regexList, 
+    valueList = rep(1, length(playDates25)), 
+    ineq = "<=", 
+    rhs = awayMax
+  )
+}
+
+```
+
 
 ```{r}
 
